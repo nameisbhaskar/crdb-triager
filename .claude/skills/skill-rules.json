@@ -2,11 +2,11 @@
     "version": "1.0",
     "description": "Skill activation triggers for Claude Code. Controls when skills automatically suggest or block actions.",
     "skills": {
-        "triager": {
+        "issue-triage": {
             "type": "domain",
             "enforcement": "suggest",
             "priority": "high",
-            "description": "Skill to help triaging roachtests and CockroachDB test failures",
+            "description": "Lightweight issue triage that focuses on understanding the test first using test-explainer",
             "promptTriggers": {
                 "keywords": [
                     "triage",
@@ -15,14 +15,121 @@
                     "flake",
                     "infrastructure flake",
                     "analyze issue",
-                    "debug issue",
                     "investigate failure"
                 ],
                 "intentPatterns": [
-                    "(triage|analyze|debug|investigate).*?(issue|#[0-9]+)",
+                    "(triage|analyze|investigate).*?(issue|#[0-9]+)",
                     "(help|analyze).*?(test failure|roachtest)",
                     "issue.*?#?[0-9]{5,}",
                     "github\\.com/cockroachdb/cockroach/issues"
+                ]
+            }
+        },
+        "test-explainer": {
+            "type": "domain",
+            "enforcement": "suggest",
+            "priority": "high",
+            "description": "Skill to understand and explain roachtest implementations from GitHub failure tickets",
+            "promptTriggers": {
+                "keywords": [
+                    "explain test",
+                    "understand test",
+                    "what does test do",
+                    "test explanation",
+                    "how does test work",
+                    "analyze test",
+                    "test implementation",
+                    "explain roachtest",
+                    "understand roachtest"
+                ],
+                "intentPatterns": [
+                    "(explain|understand|describe).*?(test|roachtest)",
+                    "what does.*?(test|roachtest).*?do",
+                    "how does.*?(test|roachtest).*?work",
+                    "(explain|analyze).*?(test implementation|test code)",
+                    "understand.*?(failing test|test failure)"
+                ]
+            }
+        },
+        "stack-trace-extractor": {
+            "type": "domain",
+            "enforcement": "suggest",
+            "priority": "medium",
+            "description": "Extract stack traces from test failure logs (usually called by issue-triage)",
+            "promptTriggers": {
+                "keywords": [
+                    "extract stack trace",
+                    "get stack trace",
+                    "find stack trace",
+                    "show stack trace"
+                ],
+                "intentPatterns": [
+                    "(extract|get|find|show).*?stack trace",
+                    "where.*?fail",
+                    "stack trace.*?(issue|#[0-9]+)"
+                ]
+            }
+        },
+        "infra-flake-detector": {
+            "type": "domain",
+            "enforcement": "suggest",
+            "priority": "medium",
+            "description": "Detect infra flakes by finding similar issues with X-infra-flake label (usually called by issue-triage)",
+            "promptTriggers": {
+                "keywords": [
+                    "check infra flake",
+                    "is this infra flake",
+                    "find similar issues",
+                    "check for flake"
+                ],
+                "intentPatterns": [
+                    "(check|is this|detect).*?infra flake",
+                    "find similar.*?issue",
+                    "X-infra-flake"
+                ]
+            }
+        },
+        "team-assigner": {
+            "type": "domain",
+            "enforcement": "suggest",
+            "priority": "medium",
+            "description": "Assign test failures to the correct team based on failure location and test metadata (usually called by issue-triage)",
+            "promptTriggers": {
+                "keywords": [
+                    "assign to team",
+                    "which team owns",
+                    "route to team",
+                    "determine team",
+                    "team assignment"
+                ],
+                "intentPatterns": [
+                    "(assign|route).*?team",
+                    "which team.*?(owns|should handle)",
+                    "determine.*?team.*?(ownership|assignment)",
+                    "team.*?assignment"
+                ]
+            }
+        },
+        "testeng-oncall-triage": {
+            "type": "domain",
+            "enforcement": "suggest",
+            "priority": "high",
+            "description": "Batch triage all T-testeng issues from recent days using issue-triage skill",
+            "promptTriggers": {
+                "keywords": [
+                    "testeng oncall triage",
+                    "testeng oncall",
+                    "triage testeng issues",
+                    "batch triage",
+                    "oncall triage",
+                    "triage all testeng"
+                ],
+                "intentPatterns": [
+                    "(execute|run|start|do).*?testeng.*?oncall.*?triage",
+                    "(triage|process).*?(all|batch).*?testeng",
+                    "testeng.*?oncall",
+                    "(batch|bulk).*?triage.*?testeng",
+                    "triage.*?(recent|last).*?(days|week).*?testeng"
                 ]
             }
         }
