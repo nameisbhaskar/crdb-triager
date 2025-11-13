@@ -12,19 +12,41 @@ The triager works **interactively** - you drive the conversation, ask questions,
 
 ## How It Works
 
-**You're in control.** The triager is an interactive assistant that:
+**Multi-Agent Architecture** The triager uses a sophisticated multi-agent system for comprehensive analysis:
 
-1. **Activates automatically** when you mention triage keywords or issue numbers
-2. **Downloads artifacts** - TeamCity logs, debug.zip, source code at the exact SHA
-3. **Analyzes intelligently** - Reads logs, examines test source, searches for similar issues
-4. **Responds to your guidance** - "Check the journalctl logs", "Grep CRDB source for that error", "What does the test code do?"
-5. **Provides structured analysis** - Classification, confidence, evidence, team assignment
+```
+User Request: "Triage issue #156490"
+         ↓
+   [Triager Orchestrator]
+         ↓
+    Launches 3 parallel agents:
+         ├─→ [log-analyzer]     → Analyzes artifacts and logs
+         ├─→ [code-analyzer]    → Investigates codebase
+         └─→ [issue-correlator] → Finds related issues
+                   ↓ ↓ ↓
+         [synthesis-triager]    → Makes final classification
+                   ↓
+         TRIAGE.md + BUG_ANALYSIS.md (if bug)
+```
 
-**This is NOT autopilot.** You make the final call on:
-- Whether it's a flake or bug
-- Release-blocker status
-- Confidence levels
-- When to dig deeper vs when you have enough context
+**Each agent is specialized:**
+1. **log-analyzer** - Downloads artifacts, reads test.log, system logs, goroutine dumps
+2. **code-analyzer** - Examines test source, traces error origins, finds recent changes
+3. **issue-correlator** - Searches GitHub for similar failures, identifies patterns
+4. **synthesis-triager** - Synthesizes all evidence into final classification
+
+**Benefits:**
+- Parallel execution (~8 min total vs ~15 min sequential)
+- Specialized expertise in each domain
+- Cross-validation of findings
+- Comprehensive evidence gathering
+- High-confidence classifications
+
+**You're still in control:**
+- Guide the analysis with specific questions
+- Override classifications if needed
+- Request deeper investigation
+- Approve or reject recommendations
 
 ## Quick Start
 
@@ -184,13 +206,30 @@ Think of it as **pair programming for triage** - you're the expert, Claude is yo
 
 ## Under the Hood
 
-**Components:**
+**Multi-Agent Components:**
 
-- `.claude/skills/triager/` - Expert knowledge base (workflow, patterns, teams)
+- `.claude/skills/triager/` - Main orchestrator skill
+  - `orchestrator.md` - Multi-agent coordination guide
+  - `workflow.md`, `patterns.md`, `teams.md` - Domain knowledge
+- `.claude/skills/log-analyzer/` - Log/artifact analysis specialist
+- `.claude/skills/code-analyzer/` - Codebase investigation specialist
+- `.claude/skills/issue-correlator/` - GitHub issue search specialist
+- `.claude/skills/synthesis-triager/` - Final classification specialist
 - `.claude/hooks/triage-helpers.sh` - Bash utilities for downloading artifacts
 - `.claude/hooks/skill-activation-prompt.sh` - Auto-activates skill on triage keywords
 - `cockroachdb/` - Source code submodule (auto-checked-out at failure SHA)
 - `workspace/issues/*/` - Per-issue workspace for artifacts and analysis
+
+**Analysis Outputs (per issue):**
+
+```
+workspace/issues/156490/
+├── LOG_ANALYSIS.md       # From log-analyzer agent
+├── CODE_ANALYSIS.md      # From code-analyzer agent
+├── ISSUE_CORRELATION.md  # From issue-correlator agent
+├── TRIAGE.md             # From synthesis-triager (final)
+└── BUG_ANALYSIS.md       # From synthesis-triager (if ACTUAL_BUG)
+```
 
 **Dependencies:**
 
@@ -247,6 +286,127 @@ This system is intentionally built as a **skill** (expert knowledge base) rather
 - Make the final call on classification and confidence
 
 Think of it as an expert assistant, not autopilot.
+
+## Validator Skill - Quality Assurance for Triage
+
+The **validator skill** provides a second layer of quality assurance for triage analyses. It independently reviews completed triages to ensure accuracy and completeness.
+
+### What It Does
+
+The validator skill:
+- **Reviews triage analyses** - Checks TRIAGE.md files for quality and accuracy
+- **Validates classifications** - Ensures the conclusion matches the evidence
+- **Verifies evidence** - Cross-checks citations against actual log files
+- **Assesses confidence levels** - Confirms confidence scores are appropriate
+- **Checks completeness** - Identifies gaps in analysis or overlooked evidence
+- **Triggers re-triage** - Invokes the triager skill for fresh analysis when validation fails
+
+### When to Use
+
+Use the validator skill when:
+- A triage has been completed and you want quality review
+- You're uncertain about a triage decision and want a second opinion
+- You want to validate a release-blocker triage (extra scrutiny)
+- Someone explicitly requests validation
+
+**Usage examples:**
+```
+You: Validate the triage for issue #157108
+
+You: Review the TRIAGE.md for issue #157102 - is it accurate?
+
+You: I'm not confident about this triage. Can you validate it?
+
+You: This is a release-blocker. Please validate the triage analysis.
+```
+
+### How It Works
+
+1. **Independent review** - Validator reads the TRIAGE.md and forms its own opinion
+2. **Evidence verification** - Cross-checks claims against actual log files
+3. **Quality assessment** - Checks for common errors and missing analysis
+4. **Validation decision** - APPROVED, NEEDS_REVIEW, or REJECTED
+5. **Re-triage if needed** - Automatically invokes triager skill for fresh analysis if validation fails
+6. **Documentation** - Saves validation report to VALIDATION.md
+
+### Validation Criteria
+
+The validator checks:
+- ✓ Classification matches the evidence
+- ✓ System logs examined (for infrastructure claims)
+- ✓ Source code analyzed (for bug claims)
+- ✓ Test code reviewed (for test bug claims)
+- ✓ Evidence properly cited with file paths and line numbers
+- ✓ Confidence level appropriate for evidence strength
+- ✓ Team assignment matches the failure type
+- ✓ Reasoning is sound and logical
+- ✓ No critical gaps in analysis
+
+**See [.claude/skills/validator/](./. claude/skills/validator/) for detailed validation criteria and workflow.**
+
+### Example Validation Session
+
+```
+You: Validate the triage for issue #157108
+
+Claude: [validator skill activates]
+
+        I'll validate the triage analysis. Let me review the TRIAGE.md
+        and cross-check against the actual evidence...
+
+        [Reads TRIAGE.md, examines logs, verifies citations]
+
+        Validation Result: APPROVED
+
+        The triage is accurate and thorough:
+        ✓ Classification (INFRASTRUCTURE_FLAKE) matches evidence
+        ✓ OOM kill clearly documented with timestamps
+        ✓ System logs properly examined
+        ✓ Confidence level (0.95) appropriate
+        ✓ Team assignment correct
+
+        Minor observation: Could have checked Prometheus metrics,
+        but not material to conclusion.
+
+        Recommendation: Approve this triage and close issue as flake.
+```
+
+### Re-Triage on Validation Failure
+
+If validation finds critical issues, the validator automatically triggers a fresh analysis:
+
+```
+You: Validate the triage for issue #157102
+
+Claude: [validator skill activates]
+
+        Validation Result: REJECTED
+
+        Critical issues found:
+        ✗ Claimed INFRASTRUCTURE_FLAKE but system logs not checked
+        ✗ No evidence of OOM or infrastructure issues
+        ✗ CRDB logs show replica inconsistency errors (suggests real bug)
+        ✗ Confidence (0.95) too high for the evidence
+
+        Triggering re-triage with fresh analysis...
+
+        [Invokes triager skill]
+
+        Re-Triage Result: ACTUAL_BUG
+        Confidence: 0.80
+
+        The fresh analysis found evidence of a replication bug that
+        was missed in the original triage. This appears to be a real
+        issue requiring investigation by the Replication team.
+```
+
+### Benefits
+
+- **Catches errors** - Prevents misclassified bugs or incorrect release-blocker decisions
+- **Quality assurance** - Ensures triage analyses meet standards
+- **Second opinion** - Provides independent verification for complex cases
+- **Training feedback** - Identifies common triage mistakes for improvement
+- **Automated re-triage** - Automatically triggers fresh analysis when needed
 
 ## License
 
