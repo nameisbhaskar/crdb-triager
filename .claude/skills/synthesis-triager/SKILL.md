@@ -14,11 +14,12 @@ Given:
 - Log analysis (LOG_ANALYSIS.md)
 - Code analysis (CODE_ANALYSIS.md)
 - Issue correlation (ISSUE_CORRELATION.md)
+- **Baseline comparison (BASELINE_COMPARISON.md)** - NEW!
 
 Produce:
 - Definitive classification: INFRASTRUCTURE_FLAKE, TEST_BUG, or ACTUAL_BUG
 - Confidence level (0.0 - 1.0)
-- Evidence-based reasoning
+- Evidence-based reasoning (including baseline deviations)
 - Team assignment
 - Actionable recommendations
 - For ACTUAL_BUG: Detailed BUG_ANALYSIS.md for fix development
@@ -27,16 +28,20 @@ Produce:
 
 ### 1. Review All Inputs
 
-**Read the three analysis documents:**
+**Read the four analysis documents:**
 - LOG_ANALYSIS.md - What happened
 - CODE_ANALYSIS.md - Why it happened (code perspective)
 - ISSUE_CORRELATION.md - Historical context
+- **BASELINE_COMPARISON.md - How this differs from normal execution**
 
 **Extract key facts:**
 - Primary error and symptoms
 - Code components involved
 - Historical pattern (new vs recurring)
 - Platform/environment specifics
+- **Baseline deviations (timing, goroutines, resources)**
+- **Anomaly severity (standard deviations from baseline)**
+- **Historical failure frequency**
 
 ### 2. Cross-Validate Evidence
 
@@ -44,16 +49,158 @@ Produce:
 - Do logs match code expectations?
 - Does code analysis explain log observations?
 - Does history support or contradict findings?
+- **Do baseline deviations align with observed errors?**
+- **Is failure severity consistent with statistical anomalies?**
 
 **Identify contradictions:**
 - Logs say X, but code says Y - investigate why
 - First time vs "happens all the time" - which is true?
 - Infrastructure issue vs code bug - resolve ambiguity
+- **Baseline shows normal behavior but this run failed - what changed?**
 
 **Weight evidence:**
 - Direct evidence (explicit error) > inference
 - Multiple corroborating sources > single source
 - Recent pattern > old history
+- **Statistical anomalies (>10σ) > single observations**
+- **Baseline data (10+ runs) > anecdotal evidence**
+
+### 2.1. 🚨 CRITICAL: Cross-Validate Stack Trace Interpretation
+
+**THIS PREVENTS MISCLASSIFYING ACTUAL_BUG AS TEST_BUG**
+
+When CODE_ANALYSIS and LOG_ANALYSIS classifications differ, you MUST investigate the stack trace interpretation:
+
+#### Scenario: CODE_ANALYSIS says TEST_BUG, LOG_ANALYSIS says ACTUAL_BUG
+
+**Red flags that CODE_ANALYSIS may be wrong:**
+
+1. **LOG_ANALYSIS found missing server handler:**
+```markdown
+LOG_ANALYSIS.md:
+"Missing Handler Analysis:
+- Client waiting for RPC response
+- Server handler: NOT FOUND
+- Significance: CRITICAL - RPC routing failure"
+
+CODE_ANALYSIS.md:
+"Classification: TEST_BUG - test doesn't close stream"
+```
+
+**Resolution:**
+- Missing server handler is a **smoking gun** for ACTUAL_BUG
+- CODE_ANALYSIS likely misread the code execution flow
+- Trust LOG_ANALYSIS runtime evidence over CODE_ANALYSIS static analysis
+- **Classification: ACTUAL_BUG**
+
+2. **LOG_ANALYSIS shows client stuck at line X, CODE_ANALYSIS doesn't mention it:**
+```markdown
+LOG_ANALYSIS.md:
+"Test stuck at line 1037 (first Recv() call)
+Server stuck at line 480 (processing, not responding)"
+
+CODE_ANALYSIS.md:
+"Bug: test receives response then abandons stream"
+```
+
+**Resolution:**
+- LOG_ANALYSIS has RUNTIME evidence (actual stuck line)
+- CODE_ANALYSIS made assumption about execution flow
+- If stuck at FIRST Recv(), test never received response to abandon
+- **Validate:** Read the exact line numbers yourself
+- **Classification: Likely ACTUAL_BUG (server not responding)**
+
+3. **LOG_ANALYSIS shows server goroutine exists and stuck:**
+```markdown
+LOG_ANALYSIS.md:
+"Server goroutine 60474 stuck at drain.go:480 (semacquire, 74 minutes)"
+
+CODE_ANALYSIS.md:
+"Test doesn't consume stream properly - TEST_BUG"
+```
+
+**Resolution:**
+- Server received RPC and is stuck processing
+- If server is stuck, it hasn't responded to client
+- Test waiting for response is CORRECT behavior
+- **Classification: ACTUAL_BUG (server deadlock)**
+
+#### How to Resolve Conflicts
+
+**Step 1: Check LOG_ANALYSIS for "Stack Trace Line Number Reference" table**
+```markdown
+| Goroutine | Component | File:Line | State | Waiting For |
+|-----------|-----------|-----------|-------|-------------|
+| 56818 | Test | `file.go:1037` | waiting | First response |
+| 60474 | Server | `server.go:480` | stuck | Internal op |
+```
+
+**Step 2: Read those exact lines yourself**
+```bash
+Read cockroachdb/pkg/kv/kvserver/replica_learner_test.go
+# Look at line 1037
+# Count: Is this the FIRST Recv() or SECOND?
+# Context: What comes before and after this line?
+```
+
+**Step 3: Correlate client and server**
+- If client waiting at line N and server stuck → ACTUAL_BUG
+- If client waiting at line N and server completed → Investigate further
+- If client waiting and server missing → ACTUAL_BUG (routing failure)
+
+**Step 4: Trust runtime evidence over static analysis**
+```
+Runtime evidence (LOG_ANALYSIS):
+- Actual stack traces showing exact stuck lines
+- Actual goroutine states
+- Actual missing handlers
+
+Static analysis (CODE_ANALYSIS):
+- Inferred execution flow from code structure
+- Assumptions about what code "should" do
+- May not account for actual runtime behavior
+
+Winner: Runtime evidence (LOG_ANALYSIS)
+```
+
+#### Example: The #156372 Case
+
+**What happened:**
+- CODE_ANALYSIS said: "TEST_BUG - test abandons stream after receiving response"
+- LOG_ANALYSIS said: "Missing Batch handler, server stuck, client waiting for first response"
+
+**The error:**
+- CODE_ANALYSIS assumed test got past line 1037 (the Recv() call)
+- LOG_ANALYSIS showed stack trace stuck AT line 1037
+- Line 1037 was the FIRST and ONLY Recv() call
+- Therefore test was waiting for FIRST response, never received it
+
+**Correct classification:**
+- ACTUAL_BUG: Server deadlock (drain blocked on SQL flush blocked on Batch RPC with missing handler)
+- NOT TEST_BUG: Test correctly waiting for expected response
+
+**How to prevent:**
+1. ✓ LOG_ANALYSIS must include line number table
+2. ✓ CODE_ANALYSIS must read exact lines from stack traces
+3. ✓ SYNTHESIS must cross-validate when classifications differ
+4. ✓ Trust runtime evidence (stack traces) over code structure assumptions
+
+### 2.2. Conflict Resolution Protocol
+
+When analyses disagree:
+
+| Conflict | Resolution |
+|----------|------------|
+| LOG: Missing handler, CODE: Test bug | **LOG wins** - Missing handler = ACTUAL_BUG |
+| LOG: Server stuck, CODE: Test bug | **LOG wins** - Server deadlock = ACTUAL_BUG |
+| LOG: Infrastructure issue, CODE: Product bug | **Investigate** - Check timing correlation |
+| LOG: Unclear, CODE: Clear | **CODE wins** - If logs don't show clear evidence |
+| Baseline: Anomaly, CODE: Normal | **Baseline wins** - Statistical evidence strong |
+
+**General rule:**
+- Runtime evidence (logs, stack traces) > Static analysis (code reading)
+- Direct observation > Inference
+- Multiple sources agreeing > Single source
 
 ### 3. Apply Classification Logic
 
@@ -75,11 +222,15 @@ Produce:
 - Multiple occurrences with same infra failure
 - Infrastructure team previously identified issue
 - No code changes could prevent this
+- **Baseline shows recurring pattern (e.g., 1.3% OOM rate)**
+- **Failed run metrics match infrastructure failure pattern**
+- **Baseline runs all healthy (no infrastructure issues)**
 
 **Red flags (not infra flake):**
 - No system log evidence
 - Product code error before infrastructure failure
 - Infrastructure failure was consequence, not cause
+- **Baseline shows same behavior occurs without infrastructure failure**
 
 #### TEST_BUG Criteria
 
@@ -125,12 +276,16 @@ Produce:
 - Reproducible deterministically
 - Clear code path to bug
 - Similar to known bugs
+- **Baseline shows anomalous behavior (e.g., goroutine leak >100σ)**
+- **Resource usage drastically different from baseline**
+- **Bug appears in successful runs too (at lower rate)**
 
 **Red flags (not actual bug):**
 - Only happens in test environment
 - Infrastructure caused the condition
 - Test expectation is wrong
 - Working as designed
+- **Baseline shows this is normal variance (<3σ)**
 
 ### 4. Determine Confidence Level
 
@@ -166,12 +321,82 @@ Produce:
 - ✓ Historical precedent (+0.1)
 - ✓ Reproducible (+0.1)
 - ✓ No contradictions (+0.1)
+- ✓ **Baseline data available (10+ runs) (+0.15)**
+- ✓ **Statistical anomaly >10σ (+0.1)**
+- ✓ **Failure matches historical pattern (+0.1)**
 - ✗ Missing logs (-0.1)
 - ✗ Ambiguous code path (-0.1)
 - ✗ First occurrence (-0.05)
 - ✗ Conflicting evidence (-0.15)
+- ✗ **No baseline data available (-0.1)**
+- ✗ **Failure within normal variance <3σ (-0.2)**
 
-### 5. Assign Team
+### 5. Search for Existing Fixes
+
+**CRITICAL: Before recommending a fix, check if it's already fixed!**
+
+**Use git and gh CLI to search:**
+
+```bash
+# Search recent commits affecting buggy files
+git log --since="30 days ago" --oneline -- pkg/path/to/buggy_file.go
+
+# Search PRs mentioning the error message
+gh pr list --search "error message text" --state merged --limit 10
+
+# Search PRs mentioning the test name
+gh pr list --search "TestName" --state merged --limit 10
+
+# Search issues with same error
+gh issue list --search "error message text" --state closed --limit 10
+```
+
+**Analyze potential fixes:**
+- Read commit messages and PR descriptions
+- Check if changes affect the buggy code location
+- Verify timing: merged after issue occurred?
+- Determine likelihood: does it actually fix this?
+
+**Document findings:**
+- List potential fixes with PR numbers
+- Note confidence (YES/NO/MAYBE) for each
+- Include commit SHAs and dates
+
+### 6. Propose Exact Code Changes (if not already fixed)
+
+**Use CODE_ANALYSIS to identify:**
+- Exact file path (repository-relative)
+- Function name
+- Line number
+- Current problematic code
+- Proposed fix with explanation
+
+**Be specific:**
+```go
+// Current code (from CODE_ANALYSIS):
+func StartRangefeed(ctx context.Context) {
+    go rf.run() // BUG: doesn't respect ctx cancellation
+}
+
+// Proposed fix:
+func StartRangefeed(ctx context.Context) {
+    go func() {
+        select {
+        case <-ctx.Done():
+            return
+        default:
+            rf.run()
+        }
+    }()
+}
+```
+
+**Why this fix works:**
+- Addresses root cause from CODE_ANALYSIS
+- Prevents goroutine leak shown in LOG_ANALYSIS
+- Consistent with baseline (normal behavior has 0 leaked goroutines)
+
+### 7. Assign Team
 
 **Use CODE_ANALYSIS and patterns.md/teams.md:**
 
@@ -237,22 +462,103 @@ Use the template from triager skill's workflow.md:
 [One paragraph summarizing the failure, classification, and key evidence]
 
 ## Evidence
-[Organized evidence from all three analyses]
+[Organized evidence from all four analyses - LOG, CODE, ISSUE, BASELINE]
+
+### From Log Analysis
+- Primary error: [exact error with file:line]
+- Infrastructure issues: [OOM/disk/network if any]
+- Goroutine analysis: [leak/deadlock findings]
+
+### From Code Analysis
+- Buggy code location: [file:line]
+- Root cause: [why it fails]
+
+### From Issue Correlation
+- Similar issues: [#123, #456]
+- Frequency: [X% failure rate]
+- Recent changes: [PR #789]
+
+### From Baseline Comparison
+- Statistical anomaly: [1034σ goroutines above baseline]
+- Historical pattern: [1.3% OOM rate]
 
 ## Reasoning
-[Step-by-step logic for classification]
+[Step-by-step logic for classification with baseline evidence]
+
+## Fix Recommendation
+
+### Check for Existing Fix
+**Search for recent fixes:**
+- Search commits affecting: [list files from code analysis]
+- Search PRs mentioning: [error message or test name]
+- Check if issue is already fixed in: [master/release branches]
+
+**Potential existing fixes:**
+- PR #XXXX: [title] - merged [date] - [likely fixes this? YES/NO]
+- Commit XXXXXXX: [message] - [likely fixes this? YES/NO]
+
+### Exact Code Changes Needed (if not already fixed)
+
+**Primary Fix Location:**
+- **File:** `pkg/path/to/file.go`
+- **Function:** `FunctionName()`
+- **Line:** Around line XXX
+- **Current Code:**
+  ```go
+  // Problematic code from CODE_ANALYSIS
+  func FunctionName() {
+      // buggy logic here
+  }
+  ```
+- **Proposed Fix:**
+  ```go
+  // What needs to change
+  func FunctionName() {
+      // fixed logic here
+      // Add: proper context cancellation
+      // Remove: unchecked goroutine launch
+  }
+  ```
+- **Why:** [Explanation of why this fix addresses the root cause]
+
+**Secondary Changes (if needed):**
+- **File:** `pkg/other/file.go:line`
+- **Change:** [What to modify]
+- **Why:** [Supporting change needed]
+
+### Verification Steps
+1. Run failing test: `bazel test //pkg/path:test_name`
+2. Stress test: `--test_arg=-test.count=100`
+3. Check related tests: [list tests]
+4. Monitor for: [specific metrics or log messages]
 
 ## Team Assignment Reasoning
-[Why this team]
+[Why this team - based on code component from CODE_ANALYSIS]
 
 ## Release-Blocker Assessment
 [Keep/remove recommendation with reasoning]
 
 ## Recommendations
-[Specific next steps]
+
+### Immediate Actions
+1. [If existing fix found] Verify PR #XXXX fixes this issue
+2. [If no fix] Assign to [team] for fix implementation
+3. [If INFRASTRUCTURE_FLAKE] Report to infrastructure team about [specific issue]
+
+### Long-term Actions
+1. [Prevent recurrence - e.g., add monitoring, improve test robustness]
+2. [Related improvements]
 
 ## Files Analyzed
-[List all files examined across all phases]
+- LOG_ANALYSIS.md
+- CODE_ANALYSIS.md
+- ISSUE_CORRELATION.md
+- BASELINE_COMPARISON.md
+
+## Code Locations Referenced
+- Primary bug: `pkg/path/file.go:line` (from CODE_ANALYSIS)
+- Test location: `pkg/test/path.go:line`
+- Related code: [additional files]
 ```
 
 #### For ACTUAL_BUG: Also Create BUG_ANALYSIS.md
@@ -303,13 +609,14 @@ Use the template from triager skill's SKILL.md:
 
 ## Decision Matrix
 
-| Logs Show | Code Shows | History Shows | Likely Classification |
-|-----------|------------|---------------|----------------------|
-| Infra failure | Code correct | Recurring flake | INFRASTRUCTURE_FLAKE |
-| Test assertion fail | Test wrong | Test recently changed | TEST_BUG |
-| Panic in product | Bug in code | New regression | ACTUAL_BUG |
-| Error message | Resource leak | Known issue | ACTUAL_BUG |
-| Timeout | Timing issue | Flaky test | TEST_BUG or INFRASTRUCTURE_FLAKE |
+| Logs Show | Code Shows | History Shows | Baseline Shows | Likely Classification |
+|-----------|------------|---------------|----------------|----------------------|
+| Infra failure | Code correct | Recurring flake | 1.3% OOM rate | INFRASTRUCTURE_FLAKE |
+| Test assertion fail | Test wrong | Test recently changed | Normal metrics | TEST_BUG |
+| Panic in product | Bug in code | New regression | Anomaly >100σ | ACTUAL_BUG |
+| Error message | Resource leak | Known issue | 1034σ goroutines | ACTUAL_BUG |
+| Timeout | Timing issue | Flaky test | Normal duration | TEST_BUG or INFRASTRUCTURE_FLAKE |
+| OOM + leak | Both issues | Mixed pattern | OOM 75%, leak 25% | PRIMARY: INFRA, SECONDARY: BUG |
 
 ## Special Cases
 
@@ -363,10 +670,18 @@ Before submitting TRIAGE.md:
 - [ ] Evidence section cites specific files and line numbers
 - [ ] Reasoning explains how evidence leads to classification
 - [ ] Team assignment is specific (not just "engineering")
+- [ ] **Fix Recommendation section includes:**
+  - [ ] Search for existing fixes (git log, gh pr list)
+  - [ ] Potential existing fixes listed with PR numbers and confidence
+  - [ ] **Exact code changes needed (file, function, line, current code, proposed fix)**
+  - [ ] Explanation of WHY the fix works
+  - [ ] Verification steps to test the fix
 - [ ] Recommendations are actionable
 - [ ] If ACTUAL_BUG, BUG_ANALYSIS.md is also created
 - [ ] Release-blocker assessment is present and justified
-- [ ] All three input analyses are referenced
+- [ ] **All four input analyses are referenced (LOG, CODE, ISSUE, BASELINE)**
+- [ ] **Baseline deviations are incorporated into reasoning**
+- [ ] **Code locations referenced with exact file:line numbers**
 
 ## Common Pitfalls to Avoid
 
@@ -399,16 +714,19 @@ Before submitting TRIAGE.md:
 **Good triage has:**
 - Clear classification with solid reasoning
 - Appropriate confidence level
-- Evidence from all three analysis phases
+- Evidence from all four analysis phases (LOG, CODE, ISSUE, BASELINE)
 - Actionable recommendations
 - Correct team assignment
 
 **Excellent triage has:**
 - All of above, plus:
+- **Quantifies baseline deviations (e.g., "1241 leaked goroutines, 1034σ above baseline")**
+- **References historical failure frequency from baseline**
 - Explains any conflicting evidence
 - Provides reproduction steps
 - Suggests specific fix approach
 - Links to related issues
 - Gives release impact assessment
+- **Distinguishes normal variance from anomalous failure using statistical evidence**
 
 Your goal: Produce triage that enables rapid, correct resolution of the issue.

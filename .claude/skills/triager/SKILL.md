@@ -17,58 +17,174 @@ This work is mission critical, as release-blocker should not be treated lightly:
 - if the label is wrong and this is a test or infrastructure flake, the release should absolutely not be blocked
 - if the failure is real and could impact customers, it is essential that your analyze flags it and you make sure to report that the release needs to be postponed
 
+## CRITICAL: When This Skill Is Invoked
+
+**MANDATORY FIRST STEP: Launch the multi-agent orchestration system.**
+
+When you are invoked to triage an issue, you MUST immediately:
+
+1. **DO NOT attempt to triage the issue yourself**
+2. **DO launch 4 specialized analysis agents in parallel** using the Task tool
+3. **WAIT for all agents to complete and produce their analysis files**
+4. **THEN launch the synthesis agent** to make the final classification
+
+This is NOT optional. The multi-agent system provides deeper, more accurate analysis than trying to do everything yourself.
+
+**Exception:** Only skip the multi-agent system if:
+- Artifacts are completely unavailable AND
+- The issue is obviously a known infrastructure flake
+
+Otherwise, ALWAYS use the multi-agent orchestration.
+
 ## Multi-Agent Architecture
 
 **The triager uses a sophisticated multi-agent approach for comprehensive analysis.**
 
-When you receive a triage request, you should **orchestrate specialized agents** rather than doing all analysis yourself:
+When you receive a triage request, you MUST **orchestrate specialized agents** rather than doing all analysis yourself:
 
 ### Agent-Based Workflow
 
 ```
-1. [log-analyzer]     → Analyzes artifacts and logs
-2. [code-analyzer]    → Investigates codebase
-3. [issue-correlator] → Finds related issues
-     ↓ ↓ ↓ (all outputs feed into)
-4. [synthesis-triager] → Makes final classification
+1. [log-analyzer]      → Analyzes artifacts and logs
+2. [code-analyzer]     → Investigates codebase
+3. [issue-correlator]  → Finds related issues
+4. [baseline-comparator] → Compares vs successful runs
+     ↓ ↓ ↓ ↓ (all outputs feed into)
+5. [synthesis-triager]  → Makes final classification
 ```
 
-**Launch agents using the Task tool:**
+## HOW TO ORCHESTRATE (STEP-BY-STEP)
 
-The specialized skills (.claude/skills/log-analyzer/, code-analyzer/, etc.) provide expert guidance that general-purpose agents follow. Here's how to orchestrate:
+**Step 1: Extract the issue number from the user's request**
 
-```markdown
-I'll coordinate a comprehensive multi-agent triage for issue #156490.
+Example: User says "triage issue #156490" → issue_num = 156490
 
-First, launching 3 parallel analysis agents:
+**Step 2: Launch 4 parallel analysis agents**
 
-[Use Task tool 3 times in one message with these prompts:]
+You MUST send a SINGLE message with FOUR Task tool calls. Here are the exact prompts to use:
 
-1. Log Analyzer Agent:
-   "You are a log analysis expert. Read .claude/skills/log-analyzer/SKILL.md for guidance.
-   Analyze issue #156490: download artifacts, examine test.log and system logs,
-   create workspace/issues/156490/LOG_ANALYSIS.md with your findings."
+**Agent 1: Log Analyzer**
+```
+Use Task tool:
+- subagent_type: "general-purpose"
+- description: "Analyze logs and artifacts"
+- prompt: "You are a log analysis expert for CockroachDB test failures.
 
-2. Code Analyzer Agent:
-   "You are a code analysis expert. Read .claude/skills/code-analyzer/SKILL.md for guidance.
-   Analyze issue #156490: examine test source, trace errors, check recent commits,
-   create workspace/issues/156490/CODE_ANALYSIS.md."
+Read .claude/skills/log-analyzer/SKILL.md for detailed guidance.
 
-3. Issue Correlator Agent:
-   "You are an issue search expert. Read .claude/skills/issue-correlator/SKILL.md for guidance.
-   Find related issues for #156490: search GitHub, identify patterns,
-   create workspace/issues/156490/ISSUE_CORRELATION.md."
+Task: Analyze issue #[ISSUE_NUM]
+1. Download artifacts: bash .claude/hooks/triage-download.sh [ISSUE_NUM]
+2. Analyze test.log, system logs (journalctl, dmesg), goroutine dumps
+3. Extract: primary error, stack traces, timing, infrastructure issues
+4. Create workspace/issues/[ISSUE_NUM]/LOG_ANALYSIS.md
 
-[Wait for all three agents to complete]
-
-Then launch synthesis:
-"You are the synthesis expert. Read .claude/skills/synthesis-triager/SKILL.md for guidance.
-Read all three analysis files and create final TRIAGE.md with classification for issue #156490."
+Be thorough - this feeds into final triage."
 ```
 
-**See [orchestrator.md](orchestrator.md) for complete details and exact prompts.**
+**Agent 2: Code Analyzer**
+```
+Use Task tool:
+- subagent_type: "general-purpose"
+- description: "Analyze codebase"
+- prompt: "You are a code analysis expert for CockroachDB.
 
-**See [orchestrator.md](orchestrator.md) for complete orchestration guide.**
+Read .claude/skills/code-analyzer/SKILL.md for detailed guidance.
+
+Task: Analyze issue #[ISSUE_NUM]
+1. First read workspace/issues/[ISSUE_NUM]/LOG_ANALYSIS.md for context
+2. Read test source code
+3. Trace error messages to origin
+4. Find recent commits affecting relevant files
+5. Create workspace/issues/[ISSUE_NUM]/CODE_ANALYSIS.md
+
+Use repository-relative paths."
+```
+
+**Agent 3: Issue Correlator**
+```
+Use Task tool:
+- subagent_type: "general-purpose"
+- description: "Find related issues"
+- prompt: "You are an expert at finding related GitHub issues.
+
+Read .claude/skills/issue-correlator/SKILL.md for detailed guidance.
+
+Task: Find related issues for #[ISSUE_NUM]
+1. Search for similar test failures using gh CLI
+2. Find issues with same error messages
+3. Identify failure patterns (platform, frequency)
+4. Find related PRs and recent changes
+5. Create workspace/issues/[ISSUE_NUM]/ISSUE_CORRELATION.md"
+```
+
+**Agent 4: Baseline Comparator**
+```
+Use Task tool:
+- subagent_type: "general-purpose"
+- description: "Compare vs successful baselines"
+- prompt: "You are a baseline comparison expert.
+
+Read .claude/skills/baseline-comparator/SKILL.md for detailed guidance.
+
+Task: Compare failed run with successful baselines for #[ISSUE_NUM]
+1. Extract test name from issue or LOG_ANALYSIS.md
+2. Find recent successful runs of same test (last 5-10)
+3. Extract baseline metrics: duration, goroutines, resources
+4. Identify statistical anomalies (standard deviations)
+5. Analyze historical failure frequency
+6. Create workspace/issues/[ISSUE_NUM]/BASELINE_COMPARISON.md"
+```
+
+**IMPORTANT:** Send ALL FOUR Task tool calls in ONE message for parallel execution!
+
+**Step 3: Wait for all 4 agents to complete**
+
+You will see messages like "Agent completed" for each one. Wait until all 4 are done.
+
+**Step 4: Launch synthesis agent**
+
+Once all 4 analyses are complete, launch the synthesis agent:
+
+```
+Use Task tool:
+- subagent_type: "general-purpose"
+- description: "Synthesize and classify"
+- prompt: "You are the final decision-maker for CockroachDB test failure triage.
+
+Read .claude/skills/synthesis-triager/SKILL.md for detailed guidance.
+
+Task: Make final classification for issue #[ISSUE_NUM]
+1. Read all four analysis documents:
+   - workspace/issues/[ISSUE_NUM]/LOG_ANALYSIS.md
+   - workspace/issues/[ISSUE_NUM]/CODE_ANALYSIS.md
+   - workspace/issues/[ISSUE_NUM]/ISSUE_CORRELATION.md
+   - workspace/issues/[ISSUE_NUM]/BASELINE_COMPARISON.md
+
+2. Cross-validate evidence across all analyses
+3. Use baseline deviations to inform classification
+4. Apply classification logic (INFRASTRUCTURE_FLAKE, TEST_BUG, or ACTUAL_BUG)
+5. Determine confidence level (0.0-1.0)
+6. Assign team based on component
+7. Assess release-blocker status
+
+8. Create workspace/issues/[ISSUE_NUM]/TRIAGE.md with final classification
+9. If ACTUAL_BUG, also create workspace/issues/[ISSUE_NUM]/BUG_ANALYSIS.md
+
+Be thorough and evidence-based. Your classification is what teams act on."
+```
+
+**Step 5: Present final results to user**
+
+Read the final TRIAGE.md and present:
+- Classification
+- Confidence level
+- Key evidence
+- Recommendations
+- Team assignment
+
+If ACTUAL_BUG, also present BUG_ANALYSIS.md.
+
+**See [orchestrator.md](orchestrator.md) for additional details and troubleshooting.**
 
 ### When to Use Multi-Agent
 
@@ -138,6 +254,7 @@ The triager orchestrates these specialized agents (located in ../.claude/skills/
 - **log-analyzer** - Artifact and log analysis expert
 - **code-analyzer** - Codebase investigation expert
 - **issue-correlator** - Related issue finding expert
+- **baseline-comparator** - Baseline comparison and statistical anomaly detection expert
 - **synthesis-triager** - Final classification and decision-making expert
 
 Read these files for detailed guidance on each aspect of the triage process.

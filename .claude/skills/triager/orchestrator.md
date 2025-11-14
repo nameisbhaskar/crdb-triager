@@ -15,6 +15,7 @@ User: "Triage issue #156490"
          ├─→ [log-analyzer agent] → LOG_ANALYSIS.md
          ├─→ [code-analyzer agent] → CODE_ANALYSIS.md
          ├─→ [issue-correlator agent] → ISSUE_CORRELATION.md
+         ├─→ [baseline-comparator agent] → BASELINE_COMPARISON.md
          └─→ [synthesis-triager agent] → TRIAGE.md + BUG_ANALYSIS.md
                                                 ↓
                                          Final Decision
@@ -34,7 +35,7 @@ User: "Triage issue #156490"
 
 ### Phase 1: Parallel Analysis (Concurrent)
 
-Launch three agents simultaneously using the Task tool with **general-purpose** subagent type:
+Launch **four** agents simultaneously using the Task tool with **general-purpose** subagent type:
 
 **Agent 1: Log Analyzer**
 ```
@@ -98,18 +99,42 @@ Test: <test-name from issue>
 Error: <primary error from issue>"
 ```
 
+**Agent 4: Baseline Comparator**
+```
+Use Task tool with:
+- subagent_type: "general-purpose"
+- description: "Compare failed run with successful baselines"
+- prompt: "You are an expert at comparing test failures against successful baseline runs.
+
+Read the baseline-comparator skill documentation at .claude/skills/baseline-comparator/SKILL.md
+for detailed guidance on baseline comparison.
+
+Your task:
+1. Extract test name from issue #<NUM> or LOG_ANALYSIS.md
+2. Find recent successful runs of the same test (last 5-10 runs)
+3. Extract baseline metrics: duration, goroutines, resource usage
+4. Compare failed run against baseline
+5. Identify statistical anomalies (standard deviations)
+6. Analyze historical failure frequency
+7. Create workspace/issues/<NUM>/BASELINE_COMPARISON.md following the template
+
+Issue: #<NUM>
+Test: <test-name from issue>
+Focus on: Quantifying what's different from normal execution"
+```
+
 **Implementation:**
 ```
-Send a SINGLE message with THREE Task tool calls to run agents in parallel.
-This is critical for performance - all three agents run concurrently.
-Wait for all three to complete before proceeding to synthesis.
+Send a SINGLE message with FOUR Task tool calls to run agents in parallel.
+This is critical for performance - all four agents run concurrently.
+Wait for all four to complete before proceeding to synthesis.
 ```
 
 ### Phase 2: Synthesis (Sequential)
 
-After all three analyses complete:
+After all four analyses complete:
 
-**Agent 4: Synthesis Triager**
+**Agent 5: Synthesis Triager**
 ```
 Use Task tool with:
 - subagent_type: "general-purpose"
@@ -120,23 +145,32 @@ Read the synthesis-triager skill documentation at .claude/skills/synthesis-triag
 for detailed guidance on making classifications.
 
 Your task:
-1. Read all three analysis documents:
+1. Read all four analysis documents:
    - workspace/issues/<NUM>/LOG_ANALYSIS.md
    - workspace/issues/<NUM>/CODE_ANALYSIS.md
    - workspace/issues/<NUM>/ISSUE_CORRELATION.md
+   - workspace/issues/<NUM>/BASELINE_COMPARISON.md
 
 2. Cross-validate evidence across all analyses
-3. Apply classification logic:
+3. Use baseline deviations to inform classification:
+   - Statistical anomalies (>10σ) strengthen confidence
+   - Historical failure frequency provides context
+   - Baseline comparison helps distinguish normal variance from real issues
+
+4. Apply classification logic:
    - INFRASTRUCTURE_FLAKE (infra caused it)
    - TEST_BUG (test code is wrong)
    - ACTUAL_BUG (product code has bug)
 
-4. Determine confidence level (0.0-1.0)
-5. Assign team based on component
-6. Assess release-blocker status
+5. Determine confidence level (0.0-1.0)
+   - Add +0.15 if baseline data available
+   - Add +0.1 if statistical anomaly >10σ
 
-7. Create workspace/issues/<NUM>/TRIAGE.md with final classification
-8. If ACTUAL_BUG, also create workspace/issues/<NUM>/BUG_ANALYSIS.md
+6. Assign team based on component
+7. Assess release-blocker status
+
+8. Create workspace/issues/<NUM>/TRIAGE.md with final classification
+9. If ACTUAL_BUG, also create workspace/issues/<NUM>/BUG_ANALYSIS.md
 
 Issue: #<NUM>
 Be thorough and evidence-based. Your classification is what teams act on."
@@ -154,32 +188,34 @@ Here's how to orchestrate the triaging process:
 
 ## Step 2: Launch Parallel Analysis
 
-Use the Task tool to launch all three agents concurrently:
+Use the Task tool to launch all four agents concurrently:
 
-**Important:** Send a SINGLE message with THREE Task tool uses for parallel execution.
+**Important:** Send a SINGLE message with FOUR Task tool uses for parallel execution.
 
 ```
-I need to triage issue #156490. I'll launch three analysis agents in parallel:
+I need to triage issue #156490. I'll launch four analysis agents in parallel:
 
 1. Log analyzer to examine artifacts
 2. Code analyzer to investigate the codebase
 3. Issue correlator to find related problems
+4. Baseline comparator to compare against successful runs
 
-[Use Task tool three times in one message]
+[Use Task tool four times in one message]
 ```
 
 ## Step 3: Wait for Completion
 
-All three agents will work independently and produce their outputs.
+All four agents will work independently and produce their outputs.
 
 Expected outputs:
 - workspace/issues/156490/LOG_ANALYSIS.md
 - workspace/issues/156490/CODE_ANALYSIS.md
 - workspace/issues/156490/ISSUE_CORRELATION.md
+- workspace/issues/156490/BASELINE_COMPARISON.md
 
 ## Step 4: Launch Synthesis
 
-Once all three analyses are complete:
+Once all four analyses are complete:
 
 ```
 Now I'll launch the synthesis agent to make the final classification:
@@ -226,11 +262,12 @@ Agents communicate through files in workspace:
 
 ```
 workspace/issues/156490/
-├── LOG_ANALYSIS.md       ← log-analyzer output
-├── CODE_ANALYSIS.md      ← code-analyzer output
-├── ISSUE_CORRELATION.md  ← issue-correlator output
-├── TRIAGE.md             ← synthesis-triager output (final)
-└── BUG_ANALYSIS.md       ← synthesis-triager output (if bug)
+├── LOG_ANALYSIS.md        ← log-analyzer output
+├── CODE_ANALYSIS.md       ← code-analyzer output
+├── ISSUE_CORRELATION.md   ← issue-correlator output
+├── BASELINE_COMPARISON.md ← baseline-comparator output
+├── TRIAGE.md              ← synthesis-triager output (final)
+└── BUG_ANALYSIS.md        ← synthesis-triager output (if bug)
 ```
 
 ## Customization
@@ -282,16 +319,17 @@ workspace/issues/156490/
 - Log analysis: ~5 minutes
 - Code analysis: ~5 minutes
 - Issue correlation: ~2 minutes
-- **Total (parallel):** ~5 minutes
+- Baseline comparison: ~3 minutes
+- **Total (parallel):** ~5 minutes (longest agent)
 
 vs.
 
 **Sequential execution:**
-- **Total:** ~12 minutes
+- **Total:** ~15 minutes
 
 **Synthesis:** ~3 minutes
 
-**Total end-to-end:** ~8 minutes (parallel) vs ~15 minutes (sequential)
+**Total end-to-end:** ~8 minutes (parallel) vs ~18 minutes (sequential)
 
 ## When to Use This Architecture
 
