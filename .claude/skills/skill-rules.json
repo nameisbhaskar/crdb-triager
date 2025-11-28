@@ -25,6 +25,32 @@
                     "github\\.com/cockroachdb/cockroach/issues"
                 ]
             }
+        },
+        "test-explainer": {
+            "type": "domain",
+            "enforcement": "suggest",
+            "priority": "high",
+            "description": "Skill to understand and explain roachtest implementations from GitHub failure tickets",
+            "promptTriggers": {
+                "keywords": [
+                    "explain test",
+                    "understand test",
+                    "what does test do",
+                    "test explanation",
+                    "how does test work",
+                    "analyze test",
+                    "test implementation",
+                    "explain roachtest",
+                    "understand roachtest"
+                ],
+                "intentPatterns": [
+                    "(explain|understand|describe).*?(test|roachtest)",
+                    "what does.*?(test|roachtest).*?do",
+                    "how does.*?(test|roachtest).*?work",
+                    "(explain|analyze).*?(test implementation|test code)",
+                    "understand.*?(failing test|test failure)"
+                ]
+            }
         }
     },
     "notes": {
